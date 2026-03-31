@@ -231,3 +231,21 @@ JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfSmap(JNI
     free(tmp);
     return result;
 }
+
+JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_readProcFile(JNIEnv *env, jclass clazz, jstring path) {
+    UNUSED(clazz);
+    const char *cpath = (*env)->GetStringUTFChars(env, path, NULL);
+    if (cpath == NULL) return (*env)->NewStringUTF(env, "Error: invalid path");
+    char *tmp = readFileContent(cpath);
+    if (!tmp) {
+        char errMsg[512];
+        snprintf(errMsg, sizeof(errMsg), "Error reading %s", cpath);
+        jstring result = (*env)->NewStringUTF(env, errMsg);
+        (*env)->ReleaseStringUTFChars(env, path, cpath);
+        return result;
+    }
+    jstring result = (*env)->NewStringUTF(env, tmp);
+    free(tmp);
+    (*env)->ReleaseStringUTFChars(env, path, cpath);
+    return result;
+}
