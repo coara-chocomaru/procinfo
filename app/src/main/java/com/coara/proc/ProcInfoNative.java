@@ -26,4 +26,5 @@ public class ProcInfoNative {
     public static native String getProcSelfSchedWakeUpIdle();
     public static native String getProcSelfSchedstat();
     public static native String getProcSelfSmap();
+    public static native String readProcFile(String path);
 }
