@@ -112,6 +112,11 @@ public class ProcInfoService extends Service {
         public String getProcSelfSmap() throws RemoteException {
             return ProcInfoNative.getProcSelfSmap();
         }
+        
+        @Override
+        public String readProcFile(String path) throws RemoteException {
+            return ProcInfoNative.readProcFile(path);
+        }
     };
 
     @Override
