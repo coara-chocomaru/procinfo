@@ -22,5 +22,6 @@ interface IProcInfoService {
     String getProcSelfSchedWakeUpIdle();
     String getProcSelfSchedstat();
     String getProcSelfSmap();
+    String getProcSelfAuxvSummary();
     String readProcFile(in String path);
 }
