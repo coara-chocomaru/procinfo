@@ -3,8 +3,6 @@ package com.coara.proc;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
@@ -21,7 +19,6 @@ import android.provider.MediaStore;
 import android.graphics.Typeface;
 import android.util.Log;
 import android.view.LayoutInflater;
-import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.ListView;
@@ -245,32 +242,28 @@ public class MainActivity extends Activity {
     private void showSmapChunkDialog(List<String> chunks) {
         DialogProcInfoSmapBinding dialogBinding = DialogProcInfoSmapBinding.inflate(LayoutInflater.from(this));
         dialogBinding.txtProcInfoTitle.setText("PROC_SELF_SMAP");
-        dialogBinding.txtProcInfoMeta.setText("約 " + chunks.size() + " chunks / 長押しでコピー");
+        dialogBinding.txtProcInfoMeta.setText("約 " + chunks.size() + " chunks / 長押しで範囲選択とコピー");
 
-        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, chunks) {
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, R.layout.dialog_proc_info_smap_chunk, chunks) {
             @Override
             public android.view.View getView(int position, android.view.View convertView, android.view.ViewGroup parent) {
-                TextView view = (TextView) super.getView(position, convertView, parent);
+                TextView view;
+                if (convertView instanceof TextView) {
+                    view = (TextView) convertView;
+                } else {
+                    view = (TextView) LayoutInflater.from(MainActivity.this).inflate(R.layout.dialog_proc_info_smap_chunk, parent, false);
+                }
+                String item = getItem(position);
                 view.setTypeface(Typeface.MONOSPACE);
-                view.setTextSize(12f);
+                view.setTextSize(11f);
                 view.setTextIsSelectable(true);
-                view.setPadding(24, 16, 24, 16);
-                view.setText(getItem(position));
+                view.setText(item == null ? "" : item);
                 return view;
             }
         };
         dialogBinding.listProcInfoChunks.setAdapter(adapter);
-        dialogBinding.listProcInfoChunks.setOnItemLongClickListener((AdapterView<?> parent, android.view.View view, int position, long id) -> {
-            String item = adapter.getItem(position);
-            if (item != null) {
-                ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-                if (clipboard != null) {
-                    clipboard.setPrimaryClip(ClipData.newPlainText("PROC_SELF_SMAP", item));
-                    Toast.makeText(MainActivity.this, "コピーしました", Toast.LENGTH_SHORT).show();
-                }
-            }
-            return true;
-        });
+        dialogBinding.listProcInfoChunks.setItemsCanFocus(true);
+        dialogBinding.listProcInfoChunks.setLongClickable(false);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setView(dialogBinding.getRoot())
