@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -16,14 +17,12 @@ import android.os.Environment;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.provider.MediaStore;
-import android.graphics.Typeface;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.ListView;
-import android.widget.TextView;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import com.coara.proc.databinding.ActivityMainBinding;
@@ -507,22 +506,48 @@ public class MainActivity extends Activity {
             return true;
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            return checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+            return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                    && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
         }
         return true;
     }
 
     private void requestStoragePermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_STORAGE_PERMISSION);
+            showStoragePermissionRequestDialog();
         }
+    }
+
+    private void showStoragePermissionRequestDialog() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return;
+        }
+        if (checkStoragePermission()) {
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("ストレージ権限")
+                .setMessage("ストレージの読み取りと書き込み権限を許可してください。")
+                .setCancelable(false)
+                .setPositiveButton("許可", (dialog, which) -> requestPermissions(
+                        new String[]{
+                                Manifest.permission.READ_EXTERNAL_STORAGE,
+                                Manifest.permission.WRITE_EXTERNAL_STORAGE
+                        },
+                        REQUEST_STORAGE_PERMISSION
+                ))
+                .setNegativeButton("許可しない", (dialog, which) -> {
+                    dialog.dismiss();
+                    Toast.makeText(this, "ストレージ権限が必要です", Toast.LENGTH_SHORT).show();
+                })
+                .show();
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_STORAGE_PERMISSION) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            if (areAllStoragePermissionsGranted(grantResults)) {
                 Toast.makeText(this, "権限が許可されました。もう一度All Exportをタップしてください。", Toast.LENGTH_SHORT).show();
             } else {
                 Toast.makeText(this, "ストレージ権限が必要です", Toast.LENGTH_SHORT).show();
@@ -530,9 +555,20 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean areAllStoragePermissionsGranted(int[] grantResults) {
+        if (grantResults == null || grantResults.length < 2) {
+            return false;
+        }
+        return grantResults[0] == PackageManager.PERMISSION_GRANTED
+                && grantResults[1] == PackageManager.PERMISSION_GRANTED;
+    }
+
     private void checkAndRequestStoragePermissionOnStartup() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return;
+        }
         if (!checkStoragePermission()) {
-            requestStoragePermission();
+            showStoragePermissionRequestDialog();
         }
     }
 
