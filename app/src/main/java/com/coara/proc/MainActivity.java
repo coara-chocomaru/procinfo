@@ -16,26 +16,35 @@ import android.os.Environment;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.provider.MediaStore;
+import android.graphics.Typeface;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import com.coara.proc.databinding.ActivityMainBinding;
 import com.coara.proc.databinding.DialogLoadingBinding;
 import com.coara.proc.databinding.DialogProcInfoBinding;
+import com.coara.proc.databinding.DialogProcInfoLargeBinding;
 
 import java.io.BufferedInputStream;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -46,8 +55,11 @@ public class MainActivity extends Activity {
     private static final String TAG = "MainActivity";
     private static final String PATH_PROC_SELF_WCHAN = "/proc/self/wchan";
     private static final String PATH_PROC_SELF_AUXV = "/proc/self/auxv";
+    private static final String PATH_PROC_SELF_SMAPS = "/proc/self/smaps";
     private static final int REQUEST_STORAGE_PERMISSION = 1001;
     private static final int BUFFER_SIZE = 16 * 1024;
+    private static final int LARGE_TEXT_THRESHOLD = 256 * 1024;
+    private static final int LARGE_TEXT_CHUNK_CHARS = 8192;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private IProcInfoService procInfoService;
@@ -138,6 +150,11 @@ public class MainActivity extends Activity {
     }
 
     private void showProcInfo(ProcInfoMethod method) {
+        if (method == ProcInfoMethod.PROC_SELF_SMAP) {
+            showLargeProcFileDialog("PROC_SELF_SMAP", PATH_PROC_SELF_SMAPS);
+            return;
+        }
+
         if (procInfoService == null) {
             Log.e(TAG, "Service not bound");
             Toast.makeText(MainActivity.this, "サービスが接続されていません", Toast.LENGTH_SHORT).show();
@@ -226,6 +243,11 @@ public class MainActivity extends Activity {
     }
 
     private void showDialog(String title, String content) {
+        if (content != null && content.length() >= LARGE_TEXT_THRESHOLD) {
+            showLargeTextDialog(title, content);
+            return;
+        }
+
         DialogProcInfoBinding dialogBinding = DialogProcInfoBinding.inflate(LayoutInflater.from(this));
         dialogBinding.txtProcInfo.setText(content);
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -234,6 +256,123 @@ public class MainActivity extends Activity {
                 .create();
         dialogBinding.btnCloseDialog.setOnClickListener(v -> dialog.dismiss());
         dialog.show();
+    }
+
+    private void showLargeProcFileDialog(String title, String sourcePath) {
+        showLoadingDialog("しばらくお待ちください");
+        executor.execute(() -> {
+            try {
+                List<String> chunks = loadTextChunks(sourcePath);
+                long bytes = fileSizeSafe(sourcePath);
+                runOnUiThread(() -> {
+                    dismissLoadingDialog();
+                    showLargeTextDialog(title + " (" + bytes + " bytes)", chunks);
+                });
+            } catch (IOException e) {
+                Log.e(TAG, "Error loading large proc file", e);
+                runOnUiThread(() -> {
+                    dismissLoadingDialog();
+                    Toast.makeText(MainActivity.this, "表示に失敗しました", Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+    }
+
+    private void showLargeTextDialog(String title, String content) {
+        showLargeTextDialog(title, chunkText(content));
+    }
+
+    private void showLargeTextDialog(String title, List<String> chunks) {
+        DialogProcInfoLargeBinding dialogBinding = DialogProcInfoLargeBinding.inflate(LayoutInflater.from(this));
+        dialogBinding.txtProcInfoTitle.setText(title);
+        dialogBinding.txtProcInfoMeta.setText("chunks=" + chunks.size() + ", chunkSize≈" + LARGE_TEXT_CHUNK_CHARS + " chars");
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, chunks) {
+            @Override
+            public android.view.View getView(int position, android.view.View convertView, android.view.ViewGroup parent) {
+                TextView view = (TextView) super.getView(position, convertView, parent);
+                view.setTypeface(Typeface.MONOSPACE);
+                view.setTextIsSelectable(true);
+                view.setPadding(24, 16, 24, 16);
+                view.setText(getItem(position));
+                return view;
+            }
+        };
+        dialogBinding.listProcInfoChunks.setAdapter(adapter);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(dialogBinding.getRoot())
+                .create();
+        dialogBinding.btnCloseDialog.setOnClickListener(v -> dialog.dismiss());
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT,
+                    android.view.WindowManager.LayoutParams.MATCH_PARENT);
+        }
+    }
+
+    private List<String> chunkText(String content) {
+        ArrayList<String> chunks = new ArrayList<>();
+        if (content == null || content.isEmpty()) {
+            chunks.add("");
+            return chunks;
+        }
+        int start = 0;
+        int length = content.length();
+        while (start < length) {
+            int end = Math.min(start + LARGE_TEXT_CHUNK_CHARS, length);
+            chunks.add(content.substring(start, end));
+            start = end;
+        }
+        return chunks;
+    }
+
+    private List<String> loadTextChunks(String sourcePath) throws IOException {
+        ArrayList<String> chunks = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(sourcePath), StandardCharsets.UTF_8), BUFFER_SIZE)) {
+            char[] buffer = new char[BUFFER_SIZE];
+            StringBuilder builder = new StringBuilder(BUFFER_SIZE * 2);
+            int read;
+            while ((read = reader.read(buffer)) != -1) {
+                builder.append(buffer, 0, read);
+                while (builder.length() >= LARGE_TEXT_CHUNK_CHARS) {
+                    chunks.add(builder.substring(0, LARGE_TEXT_CHUNK_CHARS));
+                    builder.delete(0, LARGE_TEXT_CHUNK_CHARS);
+                }
+            }
+            if (builder.length() > 0) {
+                chunks.add(builder.toString());
+            }
+        }
+        if (chunks.isEmpty()) {
+            chunks.add("");
+        }
+        return chunks;
+    }
+
+    private long fileSizeSafe(String sourcePath) {
+        File file = new File(sourcePath);
+        return file.exists() ? file.length() : -1L;
+    }
+
+    private String resolveProcPath(String path) {
+        if ("/proc/self/smap".equals(path)) {
+            return PATH_PROC_SELF_SMAPS;
+        }
+        return path;
+    }
+
+    private void writeZipEntryFromProcPath(ZipOutputStream zos, String zipEntryName, String procPath) throws IOException {
+        String resolvedPath = resolveProcPath(procPath);
+        zos.putNextEntry(new ZipEntry(zipEntryName));
+        try (InputStream in = new BufferedInputStream(new FileInputStream(resolvedPath), BUFFER_SIZE)) {
+            byte[] buffer = new byte[BUFFER_SIZE];
+            int len;
+            while ((len = in.read(buffer)) != -1) {
+                zos.write(buffer, 0, len);
+            }
+        }
+        zos.closeEntry();
     }
 
     private void exportAllProcInfo() {
@@ -387,14 +526,26 @@ public class MainActivity extends Activity {
         };
 
         for (String path : procPaths) {
-            String content = PATH_PROC_SELF_AUXV.equals(path)
-                    ? procInfoService.getProcSelfAuxvSummary()
-                    : procInfoService.readProcFile(path);
             String fileName = path.substring(1).replace('/', '_') + ".txt";
-            zos.putNextEntry(new ZipEntry(fileName));
-            byte[] data = (content == null ? "Error" : content).getBytes(StandardCharsets.UTF_8);
-            zos.write(data);
-            zos.closeEntry();
+            if (PATH_PROC_SELF_AUXV.equals(path)) {
+                String content = procInfoService.getProcSelfAuxvSummary();
+                zos.putNextEntry(new ZipEntry(fileName));
+                byte[] data = (content == null ? "Error" : content).getBytes(StandardCharsets.UTF_8);
+                zos.write(data);
+                zos.closeEntry();
+                continue;
+            }
+
+            try {
+                writeZipEntryFromProcPath(zos, fileName, path);
+            } catch (IOException directReadFailed) {
+                Log.w(TAG, "Direct stream failed for " + path + ", falling back to service", directReadFailed);
+                String content = procInfoService.readProcFile(resolveProcPath(path));
+                zos.putNextEntry(new ZipEntry(fileName));
+                byte[] data = (content == null ? "Error" : content).getBytes(StandardCharsets.UTF_8);
+                zos.write(data);
+                zos.closeEntry();
+            }
         }
     }
 
