@@ -3,6 +3,8 @@ package com.coara.proc;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
@@ -16,35 +18,28 @@ import android.os.Environment;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.provider.MediaStore;
-import android.graphics.Typeface;
 import android.util.Log;
+import android.util.TypedValue;
 import android.view.LayoutInflater;
-import android.widget.ArrayAdapter;
+import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
-import android.widget.ListView;
-import android.widget.TextView;
 import android.widget.Toast;
 
 import com.coara.proc.databinding.ActivityMainBinding;
 import com.coara.proc.databinding.DialogLoadingBinding;
 import com.coara.proc.databinding.DialogProcInfoBinding;
-import com.coara.proc.databinding.DialogProcInfoLargeBinding;
 
 import java.io.BufferedInputStream;
-import java.io.BufferedReader;
+import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -55,17 +50,61 @@ public class MainActivity extends Activity {
     private static final String TAG = "MainActivity";
     private static final String PATH_PROC_SELF_WCHAN = "/proc/self/wchan";
     private static final String PATH_PROC_SELF_AUXV = "/proc/self/auxv";
-    private static final String PATH_PROC_SELF_SMAPS = "/proc/self/smaps";
     private static final int REQUEST_STORAGE_PERMISSION = 1001;
     private static final int BUFFER_SIZE = 16 * 1024;
-    private static final int LARGE_TEXT_THRESHOLD = 256 * 1024;
-    private static final int LARGE_TEXT_CHUNK_CHARS = 8192;
+    private static final long MIN_DIALOG_SPINNER_MS = 220L;
+
+    private static final ProcExportEntry[] EXPORT_ENTRIES = new ProcExportEntry[]{
+            new ProcExportEntry("proc_version.txt", "/proc/version", false),
+            new ProcExportEntry("proc_cpuinfo.txt", "/proc/cpuinfo", false),
+            new ProcExportEntry("proc_meminfo.txt", "/proc/meminfo", false),
+            new ProcExportEntry("proc_stat.txt", "/proc/stat", false),
+            new ProcExportEntry("proc_loadavg.txt", "/proc/loadavg", false),
+            new ProcExportEntry("proc_uptime.txt", "/proc/uptime", false),
+            new ProcExportEntry("proc_cmdline.txt", "/proc/cmdline", false),
+            new ProcExportEntry("proc_filesystems.txt", "/proc/filesystems", false),
+            new ProcExportEntry("proc_modules.txt", "/proc/modules", false),
+            new ProcExportEntry("proc_interrupts.txt", "/proc/interrupts", false),
+            new ProcExportEntry("proc_iomem.txt", "/proc/iomem", false),
+            new ProcExportEntry("proc_ioports.txt", "/proc/ioports", false),
+            new ProcExportEntry("proc_softirqs.txt", "/proc/softirqs", false),
+            new ProcExportEntry("proc_buddyinfo.txt", "/proc/buddyinfo", false),
+            new ProcExportEntry("proc_vmstat.txt", "/proc/vmstat", false),
+            new ProcExportEntry("proc_zoneinfo.txt", "/proc/zoneinfo", false),
+            new ProcExportEntry("proc_diskstats.txt", "/proc/diskstats", false),
+            new ProcExportEntry("proc_mounts.txt", "/proc/mounts", false),
+            new ProcExportEntry("proc_self_status.txt", "/proc/self/status", false),
+            new ProcExportEntry("proc_self_maps.txt", "/proc/self/maps", false),
+            new ProcExportEntry("proc_self_mountinfo.txt", "/proc/self/mountinfo", false),
+            new ProcExportEntry("proc_self_mounts.txt", "/proc/self/mounts", false),
+            new ProcExportEntry("proc_self_mountstats.txt", "/proc/self/mountstats", false),
+            new ProcExportEntry("proc_self_io.txt", "/proc/self/io", false),
+            new ProcExportEntry("proc_self_limits.txt", "/proc/self/limits", false),
+            new ProcExportEntry("proc_self_oom_score.txt", "/proc/self/oom_score", false),
+            new ProcExportEntry("proc_self_oom_adj.txt", "/proc/self/oom_adj", false),
+            new ProcExportEntry("proc_self_oom_score_adj.txt", "/proc/self/oom_score_adj", false),
+            new ProcExportEntry("proc_self_sched.txt", "/proc/self/sched", false),
+            new ProcExportEntry("proc_self_sched_boost.txt", "/proc/self/sched_boost", false),
+            new ProcExportEntry("proc_self_sched_boost_period_ms.txt", "/proc/self/sched_boost_period_ms", false),
+            new ProcExportEntry("proc_self_sched_group_id.txt", "/proc/self/sched_group_id", false),
+            new ProcExportEntry("proc_self_sched_init_task_load.txt", "/proc/self/sched_init_task_load", false),
+            new ProcExportEntry("proc_self_sched_wake_up_idle.txt", "/proc/self/sched_wake_up_idle", false),
+            new ProcExportEntry("proc_self_schedstat.txt", "/proc/self/schedstat", false),
+            new ProcExportEntry("proc_self_smaps.txt", "/proc/self/smaps", false),
+            new ProcExportEntry("proc_self_cgroup.txt", "/proc/self/cgroup", false),
+            new ProcExportEntry("proc_self_cpuset.txt", "/proc/self/cpuset", false),
+            new ProcExportEntry("proc_self_comm.txt", "/proc/self/comm", false),
+            new ProcExportEntry("proc_self_wchan.txt", PATH_PROC_SELF_WCHAN, false),
+            new ProcExportEntry("proc_self_auxv_summary.txt", PATH_PROC_SELF_AUXV, true),
+            new ProcExportEntry("proc_self_environ.txt", "/proc/self/environ", false)
+    };
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private IProcInfoService procInfoService;
     private ActivityMainBinding binding;
     private AlertDialog loadingDialog;
     private boolean serviceBound;
+    private boolean pendingExportAfterPermission;
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -149,12 +188,27 @@ public class MainActivity extends Activity {
         PROC_SELF_AUXV
     }
 
-    private void showProcInfo(ProcInfoMethod method) {
-        if (method == ProcInfoMethod.PROC_SELF_SMAP) {
-            showLargeProcFileDialog("PROC_SELF_SMAP", PATH_PROC_SELF_SMAPS);
-            return;
-        }
+    private static final class ProcExportEntry {
+        final String fileName;
+        final String path;
+        final boolean useAuxvSummary;
 
+        ProcExportEntry(String fileName, String path, boolean useAuxvSummary) {
+            this.fileName = fileName;
+            this.path = path;
+            this.useAuxvSummary = useAuxvSummary;
+        }
+    }
+
+    private static final class ExportResult {
+        final String savedLocation;
+
+        ExportResult(String savedLocation) {
+            this.savedLocation = savedLocation;
+        }
+    }
+
+    private void showProcInfo(ProcInfoMethod method) {
         if (procInfoService == null) {
             Log.e(TAG, "Service not bound");
             Toast.makeText(MainActivity.this, "サービスが接続されていません", Toast.LENGTH_SHORT).show();
@@ -163,21 +217,19 @@ public class MainActivity extends Activity {
 
         showLoadingDialog("しばらくお待ちください");
         final long startTime = System.currentTimeMillis();
-        final long minDisplayTime = 1000L;
 
         executor.execute(() -> {
             try {
                 String result = readProcInfo(method);
 
                 long elapsed = System.currentTimeMillis() - startTime;
-                if (elapsed < minDisplayTime) {
-                    Thread.sleep(minDisplayTime - elapsed);
+                if (elapsed < MIN_DIALOG_SPINNER_MS) {
+                    Thread.sleep(MIN_DIALOG_SPINNER_MS - elapsed);
                 }
 
-                final String finalResult = result;
                 runOnUiThread(() -> {
                     dismissLoadingDialog();
-                    showDialog(method.name(), finalResult);
+                    showDialog(getReadableTitle(method), result);
                 });
             } catch (RemoteException | InterruptedException e) {
                 Log.e(TAG, "Error fetching proc info", e);
@@ -238,141 +290,102 @@ public class MainActivity extends Activity {
             case PROC_SELF_AUXV:
                 return procInfoService.getProcSelfAuxvSummary();
             default:
-                return "Unsupported proc method";
+                return "Unsupported method";
         }
     }
 
     private void showDialog(String title, String content) {
-        if (content != null && content.length() >= LARGE_TEXT_THRESHOLD) {
-            showLargeTextDialog(title, content);
-            return;
-        }
-
         DialogProcInfoBinding dialogBinding = DialogProcInfoBinding.inflate(LayoutInflater.from(this));
-        dialogBinding.txtProcInfo.setText(content);
+        final String safeContent = content == null ? "" : content;
+        final String displayContent = safeContent.isEmpty() ? "（空の内容です）" : safeContent;
+
+        dialogBinding.txtProcInfo.setText(displayContent);
+        dialogBinding.txtProcInfo.setTextIsSelectable(true);
+        dialogBinding.txtProcInfo.setFocusable(true);
+        dialogBinding.txtProcInfo.setFocusableInTouchMode(true);
+        dialogBinding.txtProcInfo.setLongClickable(true);
+        dialogBinding.txtProcInfo.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setView(dialogBinding.getRoot())
                 .create();
-        dialogBinding.btnCloseDialog.setOnClickListener(v -> dialog.dismiss());
-        dialog.show();
-    }
 
-    private void showLargeProcFileDialog(String title, String sourcePath) {
-        showLoadingDialog("しばらくお待ちください");
-        executor.execute(() -> {
-            try {
-                List<String> chunks = loadTextChunks(sourcePath);
-                long bytes = fileSizeSafe(sourcePath);
-                runOnUiThread(() -> {
-                    dismissLoadingDialog();
-                    showLargeTextDialog(title + " (" + bytes + " bytes)", chunks);
-                });
-            } catch (IOException e) {
-                Log.e(TAG, "Error loading large proc file", e);
-                runOnUiThread(() -> {
-                    dismissLoadingDialog();
-                    Toast.makeText(MainActivity.this, "表示に失敗しました", Toast.LENGTH_SHORT).show();
-                });
+        dialog.setOnShowListener(d -> {
+            dialogBinding.btnCopyDialog.setOnClickListener(v -> copyToClipboard(title, safeContent));
+            dialogBinding.btnCloseDialog.setOnClickListener(v -> dialog.dismiss());
+
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setLayout(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.MATCH_PARENT);
             }
         });
-    }
 
-    private void showLargeTextDialog(String title, String content) {
-        showLargeTextDialog(title, chunkText(content));
-    }
-
-    private void showLargeTextDialog(String title, List<String> chunks) {
-        DialogProcInfoLargeBinding dialogBinding = DialogProcInfoLargeBinding.inflate(LayoutInflater.from(this));
-        dialogBinding.txtProcInfoTitle.setText(title);
-        dialogBinding.txtProcInfoMeta.setText("chunks=" + chunks.size() + ", chunkSize≈" + LARGE_TEXT_CHUNK_CHARS + " chars");
-
-        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, chunks) {
-            @Override
-            public android.view.View getView(int position, android.view.View convertView, android.view.ViewGroup parent) {
-                TextView view = (TextView) super.getView(position, convertView, parent);
-                view.setTypeface(Typeface.MONOSPACE);
-                view.setTextIsSelectable(true);
-                view.setPadding(24, 16, 24, 16);
-                view.setText(getItem(position));
-                return view;
-            }
-        };
-        dialogBinding.listProcInfoChunks.setAdapter(adapter);
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setView(dialogBinding.getRoot())
-                .create();
-        dialogBinding.btnCloseDialog.setOnClickListener(v -> dialog.dismiss());
         dialog.show();
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT,
-                    android.view.WindowManager.LayoutParams.MATCH_PARENT);
+    }
+
+    private String getReadableTitle(ProcInfoMethod method) {
+        switch (method) {
+            case PROC_VERSION:
+                return "Proc Version";
+            case PROC_CPUINFO:
+                return "Proc CPU Info";
+            case PROC_MEMINFO:
+                return "Proc Mem Info";
+            case PROC_SELF_STATUS:
+                return "Proc Self Status";
+            case PROC_SELF_MAPS:
+                return "Proc Self Maps";
+            case PROC_SELF_MOUNTINFO:
+                return "Proc Self Mountinfo";
+            case PROC_SELF_MOUNTS:
+                return "Proc Self Mounts";
+            case PROC_SELF_MOUNTSTATS:
+                return "Proc Self Mountstats";
+            case PROC_SELF_IO:
+                return "Proc Self IO";
+            case PROC_SELF_LIMITS:
+                return "Proc Self Limits";
+            case PROC_SELF_OOM_SCORE:
+                return "Proc Self Oom Score";
+            case PROC_SELF_OOM_ADJ:
+                return "Proc Self Oom Adj";
+            case PROC_SELF_OOM_SCORE_ADJ:
+                return "Proc Self Oom Score Adj";
+            case PROC_SELF_SCHED:
+                return "Proc Self Sched";
+            case PROC_SELF_SCHED_BOOST:
+                return "Proc Self Sched Boost";
+            case PROC_SELF_SCHED_BOOST_PERIOD_MS:
+                return "Proc Self Sched Boost Period Ms";
+            case PROC_SELF_SCHED_GROUP_ID:
+                return "Proc Self Sched Group Id";
+            case PROC_SELF_SCHED_INIT_TASK_LOAD:
+                return "Proc Self Sched Init Task Load";
+            case PROC_SELF_SCHED_WAKE_UP_IDLE:
+                return "Proc Self Sched Wake Up Idle";
+            case PROC_SELF_SCHEDSTAT:
+                return "Proc Self Schedstat";
+            case PROC_SELF_SMAP:
+                return "Proc Self Smap";
+            case PROC_SELF_WCHAN:
+                return "Proc Self Wchan";
+            case PROC_SELF_AUXV:
+                return "Proc Self Auxv";
+            default:
+                return method.name();
         }
     }
 
-    private List<String> chunkText(String content) {
-        ArrayList<String> chunks = new ArrayList<>();
-        if (content == null || content.isEmpty()) {
-            chunks.add("");
-            return chunks;
+    private void copyToClipboard(String label, String text) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            Toast.makeText(this, "コピーできませんでした", Toast.LENGTH_SHORT).show();
+            return;
         }
-        int start = 0;
-        int length = content.length();
-        while (start < length) {
-            int end = Math.min(start + LARGE_TEXT_CHUNK_CHARS, length);
-            chunks.add(content.substring(start, end));
-            start = end;
-        }
-        return chunks;
-    }
-
-    private List<String> loadTextChunks(String sourcePath) throws IOException {
-        ArrayList<String> chunks = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(sourcePath), StandardCharsets.UTF_8), BUFFER_SIZE)) {
-            char[] buffer = new char[BUFFER_SIZE];
-            StringBuilder builder = new StringBuilder(BUFFER_SIZE * 2);
-            int read;
-            while ((read = reader.read(buffer)) != -1) {
-                builder.append(buffer, 0, read);
-                while (builder.length() >= LARGE_TEXT_CHUNK_CHARS) {
-                    chunks.add(builder.substring(0, LARGE_TEXT_CHUNK_CHARS));
-                    builder.delete(0, LARGE_TEXT_CHUNK_CHARS);
-                }
-            }
-            if (builder.length() > 0) {
-                chunks.add(builder.toString());
-            }
-        }
-        if (chunks.isEmpty()) {
-            chunks.add("");
-        }
-        return chunks;
-    }
-
-    private long fileSizeSafe(String sourcePath) {
-        File file = new File(sourcePath);
-        return file.exists() ? file.length() : -1L;
-    }
-
-    private String resolveProcPath(String path) {
-        if ("/proc/self/smap".equals(path)) {
-            return PATH_PROC_SELF_SMAPS;
-        }
-        return path;
-    }
-
-    private void writeZipEntryFromProcPath(ZipOutputStream zos, String zipEntryName, String procPath) throws IOException {
-        String resolvedPath = resolveProcPath(procPath);
-        zos.putNextEntry(new ZipEntry(zipEntryName));
-        try (InputStream in = new BufferedInputStream(new FileInputStream(resolvedPath), BUFFER_SIZE)) {
-            byte[] buffer = new byte[BUFFER_SIZE];
-            int len;
-            while ((len = in.read(buffer)) != -1) {
-                zos.write(buffer, 0, len);
-            }
-        }
-        zos.closeEntry();
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, text == null ? "" : text));
+        Toast.makeText(this, "コピーしました", Toast.LENGTH_SHORT).show();
     }
 
     private void exportAllProcInfo() {
@@ -382,24 +395,26 @@ public class MainActivity extends Activity {
         }
 
         if (!checkStoragePermission()) {
+            pendingExportAfterPermission = true;
             requestStoragePermission();
             return;
         }
 
+        pendingExportAfterPermission = false;
+        startAllExport();
+    }
+
+    private void startAllExport() {
         showLoadingDialog("しばらくお待ちください………");
         executor.execute(() -> {
             try {
                 String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
                 String zipName = "proc_info_dump_" + timestamp + ".zip";
-                File zipFile = createOutputZip(zipName);
-
-                final String savedPath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                        ? new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), zipName).getAbsolutePath()
-                        : zipFile.getAbsolutePath();
+                ExportResult result = writeExportZip(zipName);
 
                 runOnUiThread(() -> {
                     dismissLoadingDialog();
-                    Toast.makeText(MainActivity.this, "エクスポート完了: " + savedPath, Toast.LENGTH_LONG).show();
+                    Toast.makeText(MainActivity.this, "エクスポート完了: " + result.savedLocation, Toast.LENGTH_LONG).show();
                 });
             } catch (Exception e) {
                 Log.e(TAG, "Export error", e);
@@ -411,42 +426,31 @@ public class MainActivity extends Activity {
         });
     }
 
-    private File createOutputZip(String zipName) throws IOException, RemoteException {
-        File tempZip = new File(getCacheDir(), zipName);
-        try (OutputStream os = new FileOutputStream(tempZip);
-             ZipOutputStream zos = new ZipOutputStream(os)) {
-            writeProcEntries(zos);
-        }
-
+    private ExportResult writeExportZip(String zipName) throws IOException, RemoteException {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            return publishZipToDownloads(tempZip, zipName);
+            return writeZipToMediaStore(zipName);
         }
+        return writeZipToLegacyDownloads(zipName);
+    }
 
+    private ExportResult writeZipToLegacyDownloads(String zipName) throws IOException, RemoteException {
         File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         if (!downloadDir.exists() && !downloadDir.mkdirs()) {
             throw new IOException("Unable to create Downloads directory");
         }
-        File finalFile = new File(downloadDir, zipName);
-        if (tempZip.renameTo(finalFile)) {
-            return finalFile;
-        }
 
-        try (InputStream in = new BufferedInputStream(new FileInputStream(tempZip), BUFFER_SIZE);
-             OutputStream out = new FileOutputStream(finalFile)) {
-            byte[] buffer = new byte[BUFFER_SIZE];
-            int len;
-            while ((len = in.read(buffer)) != -1) {
-                out.write(buffer, 0, len);
-            }
+        File finalFile = new File(downloadDir, zipName);
+        try (OutputStream raw = new FileOutputStream(finalFile);
+             BufferedOutputStream buffered = new BufferedOutputStream(raw, BUFFER_SIZE);
+             ZipOutputStream zos = new ZipOutputStream(buffered)) {
+            writeProcEntries(zos);
         }
-        //noinspection ResultOfMethodCallIgnored
-        tempZip.delete();
-        return finalFile;
+        return new ExportResult(finalFile.getAbsolutePath());
     }
 
-    private File publishZipToDownloads(File cacheZip, String displayName) throws IOException {
+    private ExportResult writeZipToMediaStore(String zipName) throws IOException, RemoteException {
         ContentValues values = new ContentValues();
-        values.put(MediaStore.MediaColumns.DISPLAY_NAME, displayName);
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, zipName);
         values.put(MediaStore.MediaColumns.MIME_TYPE, "application/zip");
         values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/");
         values.put(MediaStore.MediaColumns.IS_PENDING, 1);
@@ -457,95 +461,39 @@ public class MainActivity extends Activity {
             throw new IOException("Unable to insert into MediaStore");
         }
 
-        try (InputStream in = new BufferedInputStream(new FileInputStream(cacheZip), BUFFER_SIZE);
-             OutputStream out = getContentResolver().openOutputStream(itemUri)) {
-            if (out == null) {
+        try (OutputStream raw = getContentResolver().openOutputStream(itemUri);
+             BufferedOutputStream buffered = raw == null ? null : new BufferedOutputStream(raw, BUFFER_SIZE)) {
+            if (buffered == null) {
                 throw new IOException("Unable to open MediaStore output stream");
             }
-            byte[] buffer = new byte[BUFFER_SIZE];
-            int len;
-            while ((len = in.read(buffer)) != -1) {
-                out.write(buffer, 0, len);
+            try (ZipOutputStream zos = new ZipOutputStream(buffered)) {
+                writeProcEntries(zos);
             }
+        } catch (IOException e) {
+            try {
+                getContentResolver().delete(itemUri, null, null);
+            } catch (Exception ignored) {
+            }
+            throw e;
         }
 
         values.clear();
         values.put(MediaStore.MediaColumns.IS_PENDING, 0);
         getContentResolver().update(itemUri, values, null, null);
 
-        //noinspection ResultOfMethodCallIgnored
-        cacheZip.delete();
-        return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), displayName);
+        return new ExportResult("Downloads/" + zipName);
     }
 
     private void writeProcEntries(ZipOutputStream zos) throws IOException, RemoteException {
-        final String[] procPaths = {
-                "/proc/version",
-                "/proc/cpuinfo",
-                "/proc/meminfo",
-                "/proc/stat",
-                "/proc/loadavg",
-                "/proc/uptime",
-                "/proc/cmdline",
-                "/proc/filesystems",
-                "/proc/modules",
-                "/proc/interrupts",
-                "/proc/iomem",
-                "/proc/ioports",
-                "/proc/softirqs",
-                "/proc/buddyinfo",
-                "/proc/vmstat",
-                "/proc/zoneinfo",
-                "/proc/diskstats",
-                "/proc/mounts",
-                "/proc/self/status",
-                "/proc/self/maps",
-                "/proc/self/mountinfo",
-                "/proc/self/mounts",
-                "/proc/self/mountstats",
-                "/proc/self/io",
-                "/proc/self/limits",
-                "/proc/self/oom_score",
-                "/proc/self/oom_adj",
-                "/proc/self/oom_score_adj",
-                "/proc/self/sched",
-                "/proc/self/sched_boost",
-                "/proc/self/sched_boost_period_ms",
-                "/proc/self/sched_group_id",
-                "/proc/self/sched_init_task_load",
-                "/proc/self/sched_wake_up_idle",
-                "/proc/self/schedstat",
-                "/proc/self/smap",
-                "/proc/self/smaps",
-                "/proc/self/cgroup",
-                "/proc/self/cpuset",
-                "/proc/self/comm",
-                PATH_PROC_SELF_WCHAN,
-                PATH_PROC_SELF_AUXV,
-                "/proc/self/environ"
-        };
+        for (ProcExportEntry entry : EXPORT_ENTRIES) {
+            String content = entry.useAuxvSummary
+                    ? procInfoService.getProcSelfAuxvSummary()
+                    : procInfoService.readProcFile(entry.path);
 
-        for (String path : procPaths) {
-            String fileName = path.substring(1).replace('/', '_') + ".txt";
-            if (PATH_PROC_SELF_AUXV.equals(path)) {
-                String content = procInfoService.getProcSelfAuxvSummary();
-                zos.putNextEntry(new ZipEntry(fileName));
-                byte[] data = (content == null ? "Error" : content).getBytes(StandardCharsets.UTF_8);
-                zos.write(data);
-                zos.closeEntry();
-                continue;
-            }
-
-            try {
-                writeZipEntryFromProcPath(zos, fileName, path);
-            } catch (IOException directReadFailed) {
-                Log.w(TAG, "Direct stream failed for " + path + ", falling back to service", directReadFailed);
-                String content = procInfoService.readProcFile(resolveProcPath(path));
-                zos.putNextEntry(new ZipEntry(fileName));
-                byte[] data = (content == null ? "Error" : content).getBytes(StandardCharsets.UTF_8);
-                zos.write(data);
-                zos.closeEntry();
-            }
+            zos.putNextEntry(new ZipEntry(entry.fileName));
+            byte[] data = (content == null ? "Error" : content).getBytes(StandardCharsets.UTF_8);
+            zos.write(data);
+            zos.closeEntry();
         }
     }
 
@@ -570,8 +518,13 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_STORAGE_PERMISSION) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "権限が許可されました。もう一度All Exportをタップしてください。", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "権限が許可されました", Toast.LENGTH_SHORT).show();
+                if (pendingExportAfterPermission) {
+                    pendingExportAfterPermission = false;
+                    startAllExport();
+                }
             } else {
+                pendingExportAfterPermission = false;
                 Toast.makeText(this, "ストレージ権限が必要です", Toast.LENGTH_SHORT).show();
             }
         }
