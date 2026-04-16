@@ -3,33 +3,49 @@ plugins {
 }
 
 android {
-    compileSdkVersion 35
-    buildToolsVersion '35.0.0'
+    namespace 'com.coara.proc'
+    compileSdk 35
     ndkVersion '25.0.8775105'
+
     defaultConfig {
-        namespace = 'com.coara.proc'
-        minSdkVersion 24
-        targetSdkVersion 32
+        applicationId 'com.coara.proc'
+        minSdk 24
+        targetSdk 35
         versionCode 6
         versionName '1.1'
-        multiDexEnabled = true
+        multiDexEnabled true
+
+        externalNativeBuild {
+            ndkBuild {
+                arguments 'APP_PLATFORM=android-24'
+                cppFlags '-O2'
+            }
+        }
+    }
+
+    signingConfigs {
+        debug {
+            // Kept for installable debug/release builds without a private keystore.
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+            minifyEnabled false
+            shrinkResources false
+        }
+        release {
+            signingConfig signingConfigs.debug
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
     }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_21
         targetCompatibility JavaVersion.VERSION_21
-    }
-   buildTypes {
-        debug {
-            signingConfig signingConfigs.debug
-        }
-        release {
-            signingConfig signingConfigs.debug
-        }
-    }
-
-    lint {
-        disable += ['ExpiredTargetSdkVersion', 'NewApi', 'Range', 'SetTextI18n', 'ScopedStorage', 'FieldCanBeLocal', 'GradleDependency']
     }
 
     buildFeatures {
@@ -38,13 +54,28 @@ android {
     }
 
     externalNativeBuild {
-        ndkBuild.path 'src/main/jni/Android.mk'
+        ndkBuild {
+            path file('src/main/jni/Android.mk')
+        }
     }
+
     sourceSets {
         main {
             aidl.srcDirs = ['src/main/aidl']
         }
     }
 
-    dependenciesInfo.includeInApk false
+    lint {
+        disable += ['ExpiredTargetSdkVersion', 'NewApi', 'Range', 'SetTextI18n', 'ScopedStorage', 'FieldCanBeLocal', 'GradleDependency']
+        checkReleaseBuilds true
+        abortOnError false
+    }
+
+    dependenciesInfo {
+        includeInApk false
+        includeInBundle false
+    }
+}
+
+dependencies {
 }
