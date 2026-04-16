@@ -242,7 +242,7 @@ public class MainActivity extends Activity {
     private void showSmapChunkDialog(List<String> chunks) {
         DialogProcInfoSmapBinding dialogBinding = DialogProcInfoSmapBinding.inflate(LayoutInflater.from(this));
         dialogBinding.txtProcInfoTitle.setText("PROC_SELF_SMAP");
-        dialogBinding.txtProcInfoMeta.setText("約 " + chunks.size() + " chunks / 長押しで範囲選択とコピー");
+        dialogBinding.txtProcInfoMeta.setText("約 " + chunks.size() + " chunks");
 
         ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, R.layout.dialog_proc_info_smap_chunk, chunks) {
             @Override
