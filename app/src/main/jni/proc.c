@@ -5,23 +5,10 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <ctype.h>
-#include <limits.h>
-#include <time.h>
-#include <unistd.h>
 
 #define READ_CHUNK_SIZE 8192
 #define INITIAL_TEXT_CAPACITY 4096
-#define INLINE_TEXT_LIMIT (512 * 1024)
-#define CACHE_MARKER_PREFIX "__PROC_CACHE__:"
 #define UNUSED(x) (void)(x)
-
-#ifndef PATH_MAX
-#define PATH_MAX 4096
-#endif
-
-static char g_cache_dir[PATH_MAX];
-static int g_cache_dir_ready = 0;
-static unsigned int g_cache_sequence = 0;
 
 #ifndef AT_NULL
 #define AT_NULL 0
@@ -265,139 +252,15 @@ static void sanitizeAscii(char *text, size_t len) {
     }
 }
 
-static void setCacheDirFromJava(JNIEnv *env, jstring cacheDir) {
-    if (cacheDir == NULL) {
-        g_cache_dir[0] = '\0';
-        g_cache_dir_ready = 0;
-        return;
-    }
-
-    const char *utf = (*env)->GetStringUTFChars(env, cacheDir, NULL);
-    if (utf == NULL) {
-        g_cache_dir[0] = '\0';
-        g_cache_dir_ready = 0;
-        return;
-    }
-
-    snprintf(g_cache_dir, sizeof(g_cache_dir), "%s", utf);
-    g_cache_dir_ready = (g_cache_dir[0] != '\0');
-    (*env)->ReleaseStringUTFChars(env, cacheDir, utf);
-}
-
-static int openCacheFileForPath(char *outPath, size_t outPathSize, FILE **outFile) {
-    if (!g_cache_dir_ready || g_cache_dir[0] == '\0') {
-        return 0;
-    }
-
-    unsigned long pid = (unsigned long)getpid();
-    unsigned long now = (unsigned long)time(NULL);
-    unsigned int seq = ++g_cache_sequence;
-    int written = snprintf(outPath, outPathSize, "%s/proc_cache_%lu_%lu_%u.txt", g_cache_dir, pid, now, seq);
-    if (written < 0 || (size_t)written >= outPathSize) {
-        return 0;
-    }
-
-    FILE *fp = fopen(outPath, "wb");
-    if (!fp) {
-        return 0;
-    }
-    *outFile = fp;
-    return 1;
-}
-
-static jstring makeCacheMarker(JNIEnv *env, const char *cachePath) {
-    char marker[PATH_MAX + 32];
-    snprintf(marker, sizeof(marker), "%s%s", CACHE_MARKER_PREFIX, cachePath);
-    return newUtf(env, marker);
-}
-
 static jstring readTextProcFile(JNIEnv *env, const char *path) {
-    FILE *fp = fopen(path, "rb");
-    if (!fp) {
+    char *tmp = readFileContent(path);
+    if (!tmp) {
         char err[256];
         snprintf(err, sizeof(err), "Error reading %s", path);
         return newUtf(env, err);
     }
-
-    size_t capacity = READ_CHUNK_SIZE + 1;
-    char *buffer = (char *)malloc(capacity);
-    if (buffer == NULL) {
-        fclose(fp);
-        return newUtf(env, "Error allocating read buffer");
-    }
-
-    size_t totalRead = 0;
-    int spillToFile = 0;
-    FILE *cacheFp = NULL;
-    char cachePath[PATH_MAX];
-    cachePath[0] = '\0';
-
-    for (;;) {
-        if (!spillToFile) {
-            size_t room = capacity - totalRead - 1;
-            if (room == 0) {
-                size_t newCapacity = capacity * 2;
-                char *newBuffer = (char *)realloc(buffer, newCapacity);
-                if (newBuffer == NULL) {
-                    free(buffer);
-                    fclose(fp);
-                    return newUtf(env, "Error expanding read buffer");
-                }
-                buffer = newBuffer;
-                capacity = newCapacity;
-                room = capacity - totalRead - 1;
-            }
-
-            size_t bytesRead = fread(buffer + totalRead, 1, room, fp);
-            if (bytesRead == 0) {
-                break;
-            }
-
-            totalRead += bytesRead;
-            if (totalRead > INLINE_TEXT_LIMIT) {
-                if (!openCacheFileForPath(cachePath, sizeof(cachePath), &cacheFp)) {
-                    free(buffer);
-                    fclose(fp);
-                    return newUtf(env, "Error creating cache file");
-                }
-                if (fwrite(buffer, 1, totalRead, cacheFp) != totalRead) {
-                    fclose(cacheFp);
-                    remove(cachePath);
-                    free(buffer);
-                    fclose(fp);
-                    return newUtf(env, "Error writing cache file");
-                }
-                spillToFile = 1;
-                free(buffer);
-                buffer = NULL;
-            }
-        } else {
-            char ioBuffer[READ_CHUNK_SIZE];
-            size_t bytesRead = fread(ioBuffer, 1, sizeof(ioBuffer), fp);
-            if (bytesRead == 0) {
-                break;
-            }
-            if (fwrite(ioBuffer, 1, bytesRead, cacheFp) != bytesRead) {
-                fclose(cacheFp);
-                remove(cachePath);
-                fclose(fp);
-                return newUtf(env, "Error writing cache file");
-            }
-        }
-    }
-
-    fclose(fp);
-
-    if (spillToFile) {
-        if (cacheFp != NULL) {
-            fclose(cacheFp);
-        }
-        return makeCacheMarker(env, cachePath);
-    }
-
-    buffer[totalRead] = '\0';
-    jstring result = newUtf(env, buffer);
-    free(buffer);
+    jstring result = newUtf(env, tmp);
+    free(tmp);
     return result;
 }
 
@@ -606,13 +469,15 @@ JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_readProcFile(JNIEnv
     }
     const char *cpath = (*env)->GetStringUTFChars(env, path, NULL);
     if (cpath == NULL) return newUtf(env, "Error: invalid path");
-    jstring result = readTextProcFile(env, cpath);
+    char *tmp = readFileContent(cpath);
+    if (!tmp) {
+        char errMsg[512];
+        snprintf(errMsg, sizeof(errMsg), "Error reading %s", cpath);
+        (*env)->ReleaseStringUTFChars(env, path, cpath);
+        return newUtf(env, errMsg);
+    }
+    jstring result = newUtf(env, tmp);
+    free(tmp);
     (*env)->ReleaseStringUTFChars(env, path, cpath);
     return result;
-}
-
-
-JNIEXPORT void JNICALL Java_com_coara_proc_ProcInfoNative_setCacheDirectory(JNIEnv *env, jclass clazz, jstring cacheDir) {
-    UNUSED(clazz);
-    setCacheDirFromJava(env, cacheDir);
 }
