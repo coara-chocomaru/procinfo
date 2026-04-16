@@ -138,5 +138,17 @@
             android:layout_height="wrap_content"
             android:text="Proc Self Smap" />
 
+        <Button
+            android:id="@+id/btnProcSelfWchan"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Proc Self Wchan" />
+
+        <Button
+            android:id="@+id/btnProcSelfAuxv"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Proc Self Auxv" />
+
     </LinearLayout>
 </ScrollView>
