@@ -5,18 +5,7 @@ import android.content.Intent;
 import android.os.IBinder;
 import android.os.RemoteException;
 
-import java.io.File;
-
 public class ProcInfoService extends Service {
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        File cacheDir = getCacheDir();
-        if (cacheDir != null) {
-            ProcInfoNative.setCacheDirectory(cacheDir.getAbsolutePath());
-        }
-    }
-
     private final IProcInfoService.Stub binder = new IProcInfoService.Stub() {
         @Override public String getProcVersion() throws RemoteException { return ProcInfoNative.getProcVersion(); }
         @Override public String getProcCPUInfo() throws RemoteException { return ProcInfoNative.getProcCPUInfo(); }

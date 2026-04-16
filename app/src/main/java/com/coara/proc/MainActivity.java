@@ -27,7 +27,6 @@ import com.coara.proc.databinding.DialogLoadingBinding;
 import com.coara.proc.databinding.DialogProcInfoBinding;
 
 import java.io.BufferedInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -46,8 +45,8 @@ import java.util.zip.ZipOutputStream;
 public class MainActivity extends Activity {
     private static final String TAG = "MainActivity";
     private static final String PATH_PROC_SELF_WCHAN = "/proc/self/wchan";
+    private static final String PATH_PROC_SELF_SMAP = "/proc/self/smaps";
     private static final String PATH_PROC_SELF_AUXV = "/proc/self/auxv";
-    private static final String LARGE_CONTENT_MARKER_PREFIX = "__PROC_CACHE__:";
     private static final int REQUEST_STORAGE_PERMISSION = 1001;
     private static final int BUFFER_SIZE = 16 * 1024;
 
@@ -140,7 +139,7 @@ public class MainActivity extends Activity {
     }
 
     private void showProcInfo(ProcInfoMethod method) {
-        if (procInfoService == null) {
+        if (method != ProcInfoMethod.PROC_SELF_SMAP && procInfoService == null) {
             Log.e(TAG, "Service not bound");
             Toast.makeText(MainActivity.this, "サービスが接続されていません", Toast.LENGTH_SHORT).show();
             return;
@@ -152,7 +151,7 @@ public class MainActivity extends Activity {
 
         executor.execute(() -> {
             try {
-                String result = resolveProcContent(readProcInfo(method));
+                String result = readProcInfo(method);
 
                 long elapsed = System.currentTimeMillis() - startTime;
                 if (elapsed < minDisplayTime) {
@@ -174,7 +173,20 @@ public class MainActivity extends Activity {
         });
     }
 
-    private String readProcInfo(ProcInfoMethod method) throws RemoteException {
+    private String readTextFileDirect(String path) throws IOException {
+        StringBuilder builder = new StringBuilder(1024 * 16);
+        try (InputStream in = new BufferedInputStream(new FileInputStream(path), BUFFER_SIZE);
+             java.io.InputStreamReader reader = new java.io.InputStreamReader(in, StandardCharsets.UTF_8)) {
+            char[] buffer = new char[BUFFER_SIZE];
+            int len;
+            while ((len = reader.read(buffer)) != -1) {
+                builder.append(buffer, 0, len);
+            }
+        }
+        return builder.toString();
+    }
+
+    private String readProcInfo(ProcInfoMethod method) throws RemoteException, IOException {
         switch (method) {
             case PROC_VERSION:
                 return procInfoService.getProcVersion();
@@ -217,95 +229,13 @@ public class MainActivity extends Activity {
             case PROC_SELF_SCHEDSTAT:
                 return procInfoService.getProcSelfSchedstat();
             case PROC_SELF_SMAP:
-                return procInfoService.getProcSelfSmap();
+                return readTextFileDirect(PATH_PROC_SELF_SMAP);
             case PROC_SELF_WCHAN:
                 return procInfoService.readProcFile(PATH_PROC_SELF_WCHAN);
             case PROC_SELF_AUXV:
                 return procInfoService.getProcSelfAuxvSummary();
             default:
                 return "Unsupported proc method";
-        }
-    }
-
-    private boolean isLargeContentMarker(String content) {
-        return content != null && content.startsWith(LARGE_CONTENT_MARKER_PREFIX);
-    }
-
-    private String extractMarkerPath(String marker) {
-        if (!isLargeContentMarker(marker)) {
-            return null;
-        }
-        String path = marker.substring(LARGE_CONTENT_MARKER_PREFIX.length()).trim();
-        return path.isEmpty() ? null : path;
-    }
-
-    private String resolveProcContent(String content) throws IOException {
-        if (!isLargeContentMarker(content)) {
-            return content;
-        }
-
-        String cachePath = extractMarkerPath(content);
-        if (cachePath == null) {
-            return content;
-        }
-
-        File cacheFile = new File(cachePath);
-        if (!cacheFile.exists() || !cacheFile.isFile()) {
-            return "Error reading cached proc file";
-        }
-
-        try {
-            return readTextFile(cacheFile);
-        } finally {
-            //noinspection ResultOfMethodCallIgnored
-            cacheFile.delete();
-        }
-    }
-
-    private String readTextFile(File file) throws IOException {
-        int initialCapacity = (int) Math.min(Math.max(file.length(), 0L), 1024L * 1024L);
-        if (initialCapacity < BUFFER_SIZE) {
-            initialCapacity = BUFFER_SIZE;
-        }
-
-        try (InputStream in = new BufferedInputStream(new FileInputStream(file), BUFFER_SIZE);
-             ByteArrayOutputStream out = new ByteArrayOutputStream(initialCapacity)) {
-            byte[] buffer = new byte[BUFFER_SIZE];
-            int len;
-            while ((len = in.read(buffer)) != -1) {
-                out.write(buffer, 0, len);
-            }
-            return out.toString(StandardCharsets.UTF_8.name());
-        }
-    }
-
-    private void writeZipEntry(ZipOutputStream zos, String entryName, String content) throws IOException {
-        zos.putNextEntry(new ZipEntry(entryName));
-        try {
-            if (isLargeContentMarker(content)) {
-                String cachePath = extractMarkerPath(content);
-                if (cachePath != null) {
-                    File cacheFile = new File(cachePath);
-                    if (cacheFile.exists() && cacheFile.isFile()) {
-                        try (InputStream in = new BufferedInputStream(new FileInputStream(cacheFile), BUFFER_SIZE)) {
-                            byte[] buffer = new byte[BUFFER_SIZE];
-                            int len;
-                            while ((len = in.read(buffer)) != -1) {
-                                zos.write(buffer, 0, len);
-                            }
-                        } finally {
-                            //noinspection ResultOfMethodCallIgnored
-                            cacheFile.delete();
-                        }
-                        return;
-                    }
-                }
-            }
-
-            byte[] data = (content == null ? "Error" : content).getBytes(StandardCharsets.UTF_8);
-            zos.write(data);
-        } finally {
-            zos.closeEntry();
         }
     }
 
@@ -475,7 +405,10 @@ public class MainActivity extends Activity {
                     ? procInfoService.getProcSelfAuxvSummary()
                     : procInfoService.readProcFile(path);
             String fileName = path.substring(1).replace('/', '_') + ".txt";
-            writeZipEntry(zos, fileName, content);
+            zos.putNextEntry(new ZipEntry(fileName));
+            byte[] data = (content == null ? "Error" : content).getBytes(StandardCharsets.UTF_8);
+            zos.write(data);
+            zos.closeEntry();
         }
     }
 

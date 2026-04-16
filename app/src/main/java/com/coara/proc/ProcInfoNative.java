@@ -32,6 +32,4 @@ public final class ProcInfoNative {
     public static native String getProcSelfSmap();
     public static native String getProcSelfAuxvSummary();
     public static native String readProcFile(String path);
-
-    public static native void setCacheDirectory(String cacheDirectory);
 }
