@@ -7,11 +7,9 @@ public final class ProcInfoNative {
 
     private ProcInfoNative() {
     }
-
     public static native String getProcVersion();
     public static native String getProcCPUInfo();
     public static native String getProcMemInfo();
-
     public static native String getProcSelfStatus();
     public static native String getProcSelfMaps();
     public static native String getProcSelfMountinfo();
