@@ -1,24 +1,28 @@
 package com.coara.proc;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.widget.Button;
+import android.widget.LinearLayout;
 import android.widget.Toast;
+
 import com.coara.proc.databinding.ActivityMainBinding;
 import com.coara.proc.databinding.DialogLoadingBinding;
 import com.coara.proc.databinding.DialogProcInfoBinding;
-import android.os.Environment;
-import android.os.Build;
-import android.Manifest;
-import android.content.pm.PackageManager;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -28,11 +32,11 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
-import android.widget.LinearLayout;
-import android.widget.Button;
 
 public class MainActivity extends Activity {
     private static final String TAG = "MainActivity";
+    private static final String PATH_PROC_SELF_WCHAN = "/proc/self/wchan";
+    private static final String PATH_PROC_SELF_AUXV = "/proc/self/auxv";
 
     private IProcInfoService procInfoService;
     private ActivityMainBinding binding;
@@ -57,9 +61,9 @@ public class MainActivity extends Activity {
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
-
         Intent intent = new Intent(this, ProcInfoService.class);
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+
         binding.btnProcVersion.setOnClickListener(v -> showProcInfo(ProcInfoMethod.PROC_VERSION));
         binding.btnProcCPUInfo.setOnClickListener(v -> showProcInfo(ProcInfoMethod.PROC_CPUINFO));
         binding.btnProcMemInfo.setOnClickListener(v -> showProcInfo(ProcInfoMethod.PROC_MEMINFO));
@@ -81,21 +85,43 @@ public class MainActivity extends Activity {
         binding.btnProcSelfSchedWakeUpIdle.setOnClickListener(v -> showProcInfo(ProcInfoMethod.PROC_SELF_SCHED_WAKE_UP_IDLE));
         binding.btnProcSelfSchedstat.setOnClickListener(v -> showProcInfo(ProcInfoMethod.PROC_SELF_SCHEDSTAT));
         binding.btnProcSelfSmap.setOnClickListener(v -> showProcInfo(ProcInfoMethod.PROC_SELF_SMAP));
+        binding.btnProcSelfWchan.setOnClickListener(v -> showProcInfo(ProcInfoMethod.PROC_SELF_WCHAN));
+        binding.btnProcSelfAuxv.setOnClickListener(v -> showProcInfo(ProcInfoMethod.PROC_SELF_AUXV));
 
         LinearLayout linearLayoutMain = findViewById(R.id.linearLayoutMain);
         Button allExportButton = new Button(this);
-        allExportButton.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        allExportButton.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
         allExportButton.setText("All Export");
         allExportButton.setOnClickListener(v -> exportAllProcInfo());
         linearLayoutMain.addView(allExportButton);
     }
 
     private enum ProcInfoMethod {
-        PROC_VERSION, PROC_CPUINFO, PROC_MEMINFO,
-        PROC_SELF_STATUS, PROC_SELF_MAPS, PROC_SELF_MOUNTINFO, PROC_SELF_MOUNTS, PROC_SELF_MOUNTSTATS,
-        PROC_SELF_IO, PROC_SELF_LIMITS, PROC_SELF_OOM_SCORE, PROC_SELF_OOM_ADJ, PROC_SELF_OOM_SCORE_ADJ,
-        PROC_SELF_SCHED, PROC_SELF_SCHED_BOOST, PROC_SELF_SCHED_BOOST_PERIOD_MS, PROC_SELF_SCHED_GROUP_ID,
-        PROC_SELF_SCHED_INIT_TASK_LOAD, PROC_SELF_SCHED_WAKE_UP_IDLE, PROC_SELF_SCHEDSTAT, PROC_SELF_SMAP
+        PROC_VERSION,
+        PROC_CPUINFO,
+        PROC_MEMINFO,
+        PROC_SELF_STATUS,
+        PROC_SELF_MAPS,
+        PROC_SELF_MOUNTINFO,
+        PROC_SELF_MOUNTS,
+        PROC_SELF_MOUNTSTATS,
+        PROC_SELF_IO,
+        PROC_SELF_LIMITS,
+        PROC_SELF_OOM_SCORE,
+        PROC_SELF_OOM_ADJ,
+        PROC_SELF_OOM_SCORE_ADJ,
+        PROC_SELF_SCHED,
+        PROC_SELF_SCHED_BOOST,
+        PROC_SELF_SCHED_BOOST_PERIOD_MS,
+        PROC_SELF_SCHED_GROUP_ID,
+        PROC_SELF_SCHED_INIT_TASK_LOAD,
+        PROC_SELF_SCHED_WAKE_UP_IDLE,
+        PROC_SELF_SCHEDSTAT,
+        PROC_SELF_SMAP,
+        PROC_SELF_WCHAN,
+        PROC_SELF_AUXV
     }
 
     private void showProcInfo(ProcInfoMethod method) {
@@ -115,12 +141,12 @@ public class MainActivity extends Activity {
             loadingDialog.show();
         });
 
-        final long MIN_DISPLAY_TIME = 1000;
+        final long minDisplayTime = 1000L;
         final long startTime = System.currentTimeMillis();
 
         new Thread(() -> {
             try {
-                String result = "";
+                String result;
                 switch (method) {
                     case PROC_VERSION:
                         result = procInfoService.getProcVersion();
@@ -185,12 +211,20 @@ public class MainActivity extends Activity {
                     case PROC_SELF_SMAP:
                         result = procInfoService.getProcSelfSmap();
                         break;
+                    case PROC_SELF_WCHAN:
+                        result = procInfoService.readProcFile(PATH_PROC_SELF_WCHAN);
+                        break;
+                    case PROC_SELF_AUXV:
+                        result = procInfoService.getProcSelfAuxvSummary();
+                        break;
+                    default:
+                        result = "Unsupported proc method";
+                        break;
                 }
 
-            
                 long elapsed = System.currentTimeMillis() - startTime;
-                if (elapsed < MIN_DISPLAY_TIME) {
-                    Thread.sleep(MIN_DISPLAY_TIME - elapsed);
+                if (elapsed < minDisplayTime) {
+                    Thread.sleep(minDisplayTime - elapsed);
                 }
 
                 String finalResult = result;
@@ -206,6 +240,7 @@ public class MainActivity extends Activity {
                     if (loadingDialog != null && loadingDialog.isShowing()) {
                         loadingDialog.dismiss();
                     }
+                    Toast.makeText(MainActivity.this, "表示に失敗しました", Toast.LENGTH_SHORT).show();
                 });
             }
         }).start();
@@ -231,6 +266,7 @@ public class MainActivity extends Activity {
             requestStoragePermission();
             return;
         }
+
         AlertDialog.Builder builder = new AlertDialog.Builder(MainActivity.this);
         DialogLoadingBinding loadingBinding = DialogLoadingBinding.inflate(LayoutInflater.from(MainActivity.this));
         loadingBinding.txtLoadingMessage.setText("しばらくお待ちください………");
@@ -242,61 +278,72 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 String[] procPaths = {
-                    "/proc/version",
-                    "/proc/cpuinfo",
-                    "/proc/meminfo",
-                    "/proc/stat",
-                    "/proc/loadavg",
-                    "/proc/uptime",
-                    "/proc/cmdline",
-                    "/proc/filesystems",
-                    "/proc/modules",
-                    "/proc/interrupts",
-                    "/proc/iomem",
-                    "/proc/ioports",
-                    "/proc/softirqs",
-                    "/proc/buddyinfo",
-                    "/proc/vmstat",
-                    "/proc/zoneinfo",
-                    "/proc/diskstats",
-                    "/proc/mounts",
-                    "/proc/self/status",
-                    "/proc/self/maps",
-                    "/proc/self/mountinfo",
-                    "/proc/self/mounts",
-                    "/proc/self/mountstats",
-                    "/proc/self/io",
-                    "/proc/self/limits",
-                    "/proc/self/oom_score",
-                    "/proc/self/oom_adj",
-                    "/proc/self/oom_score_adj",
-                    "/proc/self/sched",
-                    "/proc/self/sched_boost",
-                    "/proc/self/sched_boost_period_ms",
-                    "/proc/self/sched_group_id",
-                    "/proc/self/sched_init_task_load",
-                    "/proc/self/sched_wake_up_idle",
-                    "/proc/self/schedstat",
-                    "/proc/self/smap",
-                    "/proc/self/smaps",
-                    "/proc/self/cgroup",
-                    "/proc/self/cpuset",
-                    "/proc/self/comm",
-                    "/proc/self/environ"
+                        "/proc/version",
+                        "/proc/cpuinfo",
+                        "/proc/meminfo",
+                        "/proc/stat",
+                        "/proc/loadavg",
+                        "/proc/uptime",
+                        "/proc/cmdline",
+                        "/proc/filesystems",
+                        "/proc/modules",
+                        "/proc/interrupts",
+                        "/proc/iomem",
+                        "/proc/ioports",
+                        "/proc/softirqs",
+                        "/proc/buddyinfo",
+                        "/proc/vmstat",
+                        "/proc/zoneinfo",
+                        "/proc/diskstats",
+                        "/proc/mounts",
+                        "/proc/self/status",
+                        "/proc/self/maps",
+                        "/proc/self/mountinfo",
+                        "/proc/self/mounts",
+                        "/proc/self/mountstats",
+                        "/proc/self/io",
+                        "/proc/self/limits",
+                        "/proc/self/oom_score",
+                        "/proc/self/oom_adj",
+                        "/proc/self/oom_score_adj",
+                        "/proc/self/sched",
+                        "/proc/self/sched_boost",
+                        "/proc/self/sched_boost_period_ms",
+                        "/proc/self/sched_group_id",
+                        "/proc/self/sched_init_task_load",
+                        "/proc/self/sched_wake_up_idle",
+                        "/proc/self/schedstat",
+                        "/proc/self/smap",
+                        "/proc/self/smaps",
+                        "/proc/self/cgroup",
+                        "/proc/self/cpuset",
+                        "/proc/self/comm",
+                        PATH_PROC_SELF_WCHAN,
+                        PATH_PROC_SELF_AUXV,
+                        "/proc/self/environ"
                 };
+
                 File tempDir = new File(getCacheDir(), "proc_dump");
                 if (tempDir.exists()) {
                     deleteRecursive(tempDir);
                 }
                 tempDir.mkdirs();
+
                 for (String path : procPaths) {
-                    String content = procInfoService.readProcFile(path);
+                    String content;
+                    if (PATH_PROC_SELF_AUXV.equals(path)) {
+                        content = procInfoService.getProcSelfAuxvSummary();
+                    } else {
+                        content = procInfoService.readProcFile(path);
+                    }
                     String fileName = path.substring(1).replace('/', '_') + ".txt";
                     File txtFile = new File(tempDir, fileName);
                     try (FileWriter writer = new FileWriter(txtFile)) {
                         writer.write(content != null ? content : "Error");
-                    } catch (Exception ignored) {}
+                    } catch (Exception ignored) {
+                    }
                 }
+
                 File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
                 if (!downloadDir.exists()) {
                     downloadDir.mkdirs();
@@ -306,6 +353,7 @@ public class MainActivity extends Activity {
                 File zipFile = new File(downloadDir, zipName);
                 zipDirectory(tempDir, zipFile);
                 deleteRecursive(tempDir);
+
                 runOnUiThread(() -> {
                     if (loadingDialog != null && loadingDialog.isShowing()) {
                         loadingDialog.dismiss();

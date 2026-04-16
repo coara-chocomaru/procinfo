@@ -114,6 +114,11 @@ public class ProcInfoService extends Service {
         }
         
         @Override
+        public String getProcSelfAuxvSummary() throws RemoteException {
+            return ProcInfoNative.getProcSelfAuxvSummary();
+        }
+        
+        @Override
         public String readProcFile(String path) throws RemoteException {
             return ProcInfoNative.readProcFile(path);
         }
