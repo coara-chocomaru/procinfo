@@ -7,6 +7,7 @@
 #include <ctype.h>
 
 #define READ_CHUNK_SIZE 8192
+#define INITIAL_TEXT_CAPACITY 4096
 #define UNUSED(x) (void)(x)
 
 #ifndef AT_NULL
@@ -82,7 +83,11 @@
 #define AT_SYSINFO_EHDR 33
 #endif
 
-static int appendFormatted(char** buffer, size_t* capacity, size_t* length, const char* format, ...) {
+static jstring newUtf(JNIEnv *env, const char *text) {
+    return (*env)->NewStringUTF(env, text ? text : "");
+}
+
+static int appendFormatted(char **buffer, size_t *capacity, size_t *length, const char *format, ...) {
     va_list args;
     va_start(args, format);
     va_list copy;
@@ -96,11 +101,11 @@ static int appendFormatted(char** buffer, size_t* capacity, size_t* length, cons
 
     size_t required = *length + (size_t)needed + 1;
     if (required > *capacity) {
-        size_t newCapacity = *capacity;
+        size_t newCapacity = (*capacity == 0) ? INITIAL_TEXT_CAPACITY : *capacity;
         while (newCapacity < required) {
             newCapacity *= 2;
         }
-        char* newBuffer = (char*)realloc(*buffer, newCapacity);
+        char *newBuffer = (char *)realloc(*buffer, newCapacity);
         if (newBuffer == NULL) {
             va_end(args);
             return 0;
@@ -115,7 +120,7 @@ static int appendFormatted(char** buffer, size_t* capacity, size_t* length, cons
     return 1;
 }
 
-static const char* getAuxTypeName(unsigned long type) {
+static const char *getAuxTypeName(unsigned long type) {
     switch (type) {
         case AT_NULL: return "AT_NULL";
         case AT_IGNORE: return "AT_IGNORE";
@@ -145,26 +150,60 @@ static const char* getAuxTypeName(unsigned long type) {
     }
 }
 
-static char* readFileContent(const char* filePath) {
-    FILE* fp = fopen(filePath, "r");
+static char *readFileContent(const char *filePath) {
+    FILE *fp = fopen(filePath, "rb");
     if (!fp) return NULL;
 
-    size_t capacity = READ_CHUNK_SIZE;
-    char* buffer = (char*) malloc(capacity);
+    size_t capacity = READ_CHUNK_SIZE + 1;
+    char *buffer = (char *)malloc(capacity);
     if (buffer == NULL) {
         fclose(fp);
         return NULL;
     }
 
     size_t totalRead = 0;
-    size_t bytesRead = 0;
-
-    while ((bytesRead = fread(buffer + totalRead, 1, READ_CHUNK_SIZE, fp)) > 0) {
-        totalRead += bytesRead;
-
-        if (totalRead + READ_CHUNK_SIZE > capacity) {
+    for (;;) {
+        size_t room = capacity - totalRead - 1;
+        if (room < READ_CHUNK_SIZE) {
             capacity *= 2;
-            char* newBuffer = (char*) realloc(buffer, capacity);
+            char *newBuffer = (char *)realloc(buffer, capacity);
+            if (newBuffer == NULL) {
+                free(buffer);
+                fclose(fp);
+                return NULL;
+            }
+            buffer = newBuffer;
+            room = capacity - totalRead - 1;
+        }
+
+        size_t bytesRead = fread(buffer + totalRead, 1, room, fp);
+        totalRead += bytesRead;
+        if (bytesRead == 0) {
+            break;
+        }
+    }
+
+    buffer[totalRead] = '\0';
+    fclose(fp);
+    return buffer;
+}
+
+static unsigned char *readBinaryFileContent(const char *filePath, size_t *outSize) {
+    FILE *fp = fopen(filePath, "rb");
+    if (!fp) return NULL;
+
+    size_t capacity = READ_CHUNK_SIZE;
+    unsigned char *buffer = (unsigned char *)malloc(capacity);
+    if (buffer == NULL) {
+        fclose(fp);
+        return NULL;
+    }
+
+    size_t totalRead = 0;
+    for (;;) {
+        if (totalRead == capacity) {
+            capacity *= 2;
+            unsigned char *newBuffer = (unsigned char *)realloc(buffer, capacity);
             if (newBuffer == NULL) {
                 free(buffer);
                 fclose(fp);
@@ -172,36 +211,11 @@ static char* readFileContent(const char* filePath) {
             }
             buffer = newBuffer;
         }
-    }
-    buffer[totalRead] = '\0';
-    fclose(fp);
-    return buffer;
-}
 
-static unsigned char* readBinaryFileContent(const char* filePath, size_t* outSize) {
-    FILE* fp = fopen(filePath, "rb");
-    if (!fp) return NULL;
-
-    size_t capacity = READ_CHUNK_SIZE;
-    unsigned char* buffer = (unsigned char*)malloc(capacity);
-    if (buffer == NULL) {
-        fclose(fp);
-        return NULL;
-    }
-
-    size_t totalRead = 0;
-    size_t bytesRead = 0;
-    while ((bytesRead = fread(buffer + totalRead, 1, READ_CHUNK_SIZE, fp)) > 0) {
+        size_t bytesRead = fread(buffer + totalRead, 1, capacity - totalRead, fp);
         totalRead += bytesRead;
-        if (totalRead + READ_CHUNK_SIZE > capacity) {
-            capacity *= 2;
-            unsigned char* newBuffer = (unsigned char*)realloc(buffer, capacity);
-            if (newBuffer == NULL) {
-                free(buffer);
-                fclose(fp);
-                return NULL;
-            }
-            buffer = newBuffer;
+        if (bytesRead == 0) {
+            break;
         }
     }
 
@@ -210,30 +224,19 @@ static unsigned char* readBinaryFileContent(const char* filePath, size_t* outSiz
     return buffer;
 }
 
-static int appendString(char** buffer, size_t* capacity, size_t* length, const char* text) {
+static int appendString(char **buffer, size_t *capacity, size_t *length, const char *text) {
     return appendFormatted(buffer, capacity, length, "%s", text);
 }
 
-static int appendHexBytes(char** buffer, size_t* capacity, size_t* length, const unsigned char* data, size_t count) {
+static int appendHexBytes(char **buffer, size_t *capacity, size_t *length, const unsigned char *data, size_t count) {
     for (size_t i = 0; i < count; ++i) {
-        if (!appendFormatted(buffer, capacity, length, "%02x", data[i])) {
-            return 0;
-        }
-        if (i + 1 < count && !appendString(buffer, capacity, length, " ")) {
-            return 0;
-        }
+        if (!appendFormatted(buffer, capacity, length, "%02x", data[i])) return 0;
+        if (i + 1 < count && !appendString(buffer, capacity, length, " ")) return 0;
     }
     return 1;
 }
 
-static const char* safeCStringFromPtr(uintptr_t ptrValue) {
-    if (ptrValue == 0) {
-        return NULL;
-    }
-    return (const char*)(uintptr_t)ptrValue;
-}
-
-static size_t boundedStringLength(const char* text, size_t maxLen) {
+static size_t boundedStringLength(const char *text, size_t maxLen) {
     size_t n = 0;
     while (n < maxLen && text[n] != '\0') {
         ++n;
@@ -241,202 +244,138 @@ static size_t boundedStringLength(const char* text, size_t maxLen) {
     return n;
 }
 
-JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcVersion(JNIEnv *env, jclass clazz) {
-    UNUSED(clazz);
-    char *tmp = readFileContent("/proc/version");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/version");
-    jstring result = (*env)->NewStringUTF(env, tmp);
+static void sanitizeAscii(char *text, size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        if (!isprint((unsigned char)text[i])) {
+            text[i] = '?';
+        }
+    }
+}
+
+static jstring readTextProcFile(JNIEnv *env, const char *path) {
+    char *tmp = readFileContent(path);
+    if (!tmp) {
+        char err[256];
+        snprintf(err, sizeof(err), "Error reading %s", path);
+        return newUtf(env, err);
+    }
+    jstring result = newUtf(env, tmp);
     free(tmp);
     return result;
+}
+
+JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcVersion(JNIEnv *env, jclass clazz) {
+    UNUSED(clazz);
+    return readTextProcFile(env, "/proc/version");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcCPUInfo(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/cpuinfo");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/cpuinfo");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/cpuinfo");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcMemInfo(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/meminfo");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/meminfo");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/meminfo");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfStatus(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/status");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/status");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/status");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfMaps(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/maps");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/maps");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/maps");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfMountinfo(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/mountinfo");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/mountinfo");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/mountinfo");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfMounts(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/mounts");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/mounts");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/mounts");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfMountstats(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/mountstats");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/mountstats");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/mountstats");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfIO(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/io");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/io");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/io");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfLimits(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/limits");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/limits");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/limits");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfOomScore(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/oom_score");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/oom_score");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/oom_score");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfOomAdj(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/oom_adj");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/oom_adj");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/oom_adj");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfOomScoreAdj(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/oom_score_adj");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/oom_score_adj");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/oom_score_adj");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfSched(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/sched");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/sched");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/sched");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfSchedBoost(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/sched_boost");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/sched_boost");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/sched_boost");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfSchedBoostPeriodMs(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/sched_boost_period_ms");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/sched_boost_period_ms");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/sched_boost_period_ms");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfSchedGroupId(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/sched_group_id");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/sched_group_id");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/sched_group_id");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfSchedInitTaskLoad(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/sched_init_task_load");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/sched_init_task_load");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/sched_init_task_load");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfSchedWakeUpIdle(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/sched_wake_up_idle");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/sched_wake_up_idle");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/sched_wake_up_idle");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfSchedstat(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/schedstat");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/schedstat");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/schedstat");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfSmap(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
-    char *tmp = readFileContent("/proc/self/smap");
-    if (!tmp) return (*env)->NewStringUTF(env, "Error reading /proc/self/smap");
-    jstring result = (*env)->NewStringUTF(env, tmp);
-    free(tmp);
-    return result;
+    return readTextProcFile(env, "/proc/self/smaps");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfAuxvSummary(JNIEnv *env, jclass clazz) {
     UNUSED(clazz);
 
     size_t binarySize = 0;
-    unsigned char* binary = readBinaryFileContent("/proc/self/auxv", &binarySize);
+    unsigned char *binary = readBinaryFileContent("/proc/self/auxv", &binarySize);
     if (!binary) {
-        return (*env)->NewStringUTF(env, "Error reading /proc/self/auxv");
+        return newUtf(env, "Error reading /proc/self/auxv");
     }
 
     const size_t wordSize = sizeof(unsigned long);
@@ -444,11 +383,11 @@ JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfAuxvSumm
     const size_t entryCount = binarySize / entrySize;
     const size_t remainder = binarySize % entrySize;
 
-    size_t capacity = 4096;
-    char* out = (char*)malloc(capacity);
+    size_t capacity = INITIAL_TEXT_CAPACITY;
+    char *out = (char *)malloc(capacity);
     if (out == NULL) {
         free(binary);
-        return (*env)->NewStringUTF(env, "Error allocating auxv summary buffer");
+        return newUtf(env, "Error allocating auxv summary buffer");
     }
     out[0] = '\0';
     size_t length = 0;
@@ -462,13 +401,13 @@ JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfAuxvSumm
     if (!appendString(&out, &capacity, &length, "------+-------------------+------------------------------------------------------------\n")) goto auxv_fail;
 
     for (size_t i = 0; i < entryCount; ++i) {
-        const unsigned char* entry = binary + (i * entrySize);
+        const unsigned char *entry = binary + (i * entrySize);
         unsigned long type = 0;
         unsigned long value = 0;
         memcpy(&type, entry, wordSize);
         memcpy(&value, entry + wordSize, wordSize);
 
-        const char* typeName = getAuxTypeName(type);
+        const char *typeName = getAuxTypeName(type);
         char typeLabel[64];
         if (typeName != NULL) {
             snprintf(typeLabel, sizeof(typeLabel), "%s", typeName);
@@ -482,17 +421,13 @@ JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfAuxvSumm
         }
 
         if (type == AT_PLATFORM || type == AT_EXECFN || type == AT_BASE_PLATFORM) {
-            const char* str = safeCStringFromPtr((uintptr_t)value);
+            const char *str = (const char *)(uintptr_t)value;
             if (str != NULL) {
                 char preview[512];
                 size_t n = boundedStringLength(str, sizeof(preview) - 1);
                 memcpy(preview, str, n);
                 preview[n] = '\0';
-                for (size_t j = 0; j < n; ++j) {
-                    if (!isprint((unsigned char)preview[j])) {
-                        preview[j] = '?';
-                    }
-                }
+                sanitizeAscii(preview, n);
                 if (!appendFormatted(&out, &capacity, &length, "%5zu | %-17s | 0x%0*lx  \"%s\"\n", i, typeLabel, (int)(wordSize * 2), value, preview)) goto auxv_fail;
             } else {
                 if (!appendFormatted(&out, &capacity, &length, "%5zu | %-17s | 0x%0*lx\n", i, typeLabel, (int)(wordSize * 2), value)) goto auxv_fail;
@@ -501,7 +436,7 @@ JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfAuxvSumm
         }
 
         if (type == AT_RANDOM) {
-            const unsigned char* randomBytes = (const unsigned char*)(uintptr_t)value;
+            const unsigned char *randomBytes = (const unsigned char *)(uintptr_t)value;
             if (!appendFormatted(&out, &capacity, &length, "%5zu | %-17s | 0x%0*lx  [16 bytes] ", i, typeLabel, (int)(wordSize * 2), value)) goto auxv_fail;
             if (!appendHexBytes(&out, &capacity, &length, randomBytes, 16)) goto auxv_fail;
             if (!appendString(&out, &capacity, &length, "\n")) goto auxv_fail;
@@ -516,7 +451,7 @@ JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfAuxvSumm
         if (!appendFormatted(&out, &capacity, &length, "%5zu | %-17s | 0x%0*lx\n", i, typeLabel, (int)(wordSize * 2), value)) goto auxv_fail;
     }
 
-    jstring result = (*env)->NewStringUTF(env, out);
+    jstring result = newUtf(env, out);
     free(out);
     free(binary);
     return result;
@@ -524,22 +459,24 @@ JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_getProcSelfAuxvSumm
 auxv_fail:
     free(out);
     free(binary);
-    return (*env)->NewStringUTF(env, "Error building /proc/self/auxv summary");
+    return newUtf(env, "Error building /proc/self/auxv summary");
 }
 
 JNIEXPORT jstring JNICALL Java_com_coara_proc_ProcInfoNative_readProcFile(JNIEnv *env, jclass clazz, jstring path) {
     UNUSED(clazz);
+    if (path == NULL) {
+        return newUtf(env, "Error: invalid path");
+    }
     const char *cpath = (*env)->GetStringUTFChars(env, path, NULL);
-    if (cpath == NULL) return (*env)->NewStringUTF(env, "Error: invalid path");
+    if (cpath == NULL) return newUtf(env, "Error: invalid path");
     char *tmp = readFileContent(cpath);
     if (!tmp) {
         char errMsg[512];
         snprintf(errMsg, sizeof(errMsg), "Error reading %s", cpath);
-        jstring result = (*env)->NewStringUTF(env, errMsg);
         (*env)->ReleaseStringUTFChars(env, path, cpath);
-        return result;
+        return newUtf(env, errMsg);
     }
-    jstring result = (*env)->NewStringUTF(env, tmp);
+    jstring result = newUtf(env, tmp);
     free(tmp);
     (*env)->ReleaseStringUTFChars(env, path, cpath);
     return result;
