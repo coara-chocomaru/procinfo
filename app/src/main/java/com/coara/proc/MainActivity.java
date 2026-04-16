@@ -64,7 +64,6 @@ public class MainActivity extends Activity {
     private ActivityMainBinding binding;
     private AlertDialog loadingDialog;
     private boolean serviceBound;
-    private boolean pendingAllExportAfterPermission;
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -118,17 +117,10 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         allExportButton.setText("All Export");
-        allExportButton.setOnClickListener(v -> handleAllExportButtonClick());
+        allExportButton.setOnClickListener(v -> exportAllProcInfo());
         linearLayoutMain.addView(allExportButton);
-    }
 
-    private void handleAllExportButtonClick() {
-        if (checkStoragePermission()) {
-            exportAllProcInfo();
-            return;
-        }
-
-        requestStoragePermissionForExport();
+        checkAndRequestStoragePermissionOnStartup();
     }
 
     private enum ProcInfoMethod {
@@ -354,7 +346,7 @@ public class MainActivity extends Activity {
         }
 
         if (!checkStoragePermission()) {
-            Toast.makeText(this, "ストレージ権限が必要です", Toast.LENGTH_SHORT).show();
+            requestStoragePermission();
             return;
         }
 
@@ -520,36 +512,33 @@ public class MainActivity extends Activity {
         return true;
     }
 
-    private void requestStoragePermissionForExport() {
+    private void requestStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            showStoragePermissionRequestDialog();
+        }
+    }
+
+    private void showStoragePermissionRequestDialog() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            exportAllProcInfo();
             return;
         }
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            exportAllProcInfo();
-            return;
-        }
-
         if (checkStoragePermission()) {
-            exportAllProcInfo();
             return;
         }
-
         new AlertDialog.Builder(this)
                 .setTitle("ストレージ権限")
-                .setMessage("エクスポートのために、ストレージの読み取りと書き込み権限を許可してください。")
+                .setMessage("ストレージの読み取りと書き込み権限を許可してください。")
                 .setCancelable(false)
-                .setPositiveButton("許可", (dialog, which) -> {
-                    pendingAllExportAfterPermission = true;
-                    requestPermissions(new String[]{
-                            Manifest.permission.READ_EXTERNAL_STORAGE,
-                            Manifest.permission.WRITE_EXTERNAL_STORAGE
-                    }, REQUEST_STORAGE_PERMISSION);
-                })
+                .setPositiveButton("許可", (dialog, which) -> requestPermissions(
+                        new String[]{
+                                Manifest.permission.READ_EXTERNAL_STORAGE,
+                                Manifest.permission.WRITE_EXTERNAL_STORAGE
+                        },
+                        REQUEST_STORAGE_PERMISSION
+                ))
                 .setNegativeButton("許可しない", (dialog, which) -> {
-                    pendingAllExportAfterPermission = false;
                     dialog.dismiss();
-                    Toast.makeText(this, "エクスポートは中止しました", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "ストレージ権限が必要です", Toast.LENGTH_SHORT).show();
                 })
                 .show();
     }
@@ -559,15 +548,9 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_STORAGE_PERMISSION) {
             if (areAllStoragePermissionsGranted(grantResults)) {
-                if (pendingAllExportAfterPermission) {
-                    pendingAllExportAfterPermission = false;
-                    exportAllProcInfo();
-                } else {
-                    Toast.makeText(this, "権限が許可されました", Toast.LENGTH_SHORT).show();
-                }
+                Toast.makeText(this, "権限が許可されました。もう一度All Exportをタップしてください。", Toast.LENGTH_SHORT).show();
             } else {
-                pendingAllExportAfterPermission = false;
-                Toast.makeText(this, "権限が許可されなかったためエクスポートを中止しました", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "ストレージ権限が必要です", Toast.LENGTH_SHORT).show();
             }
         }
     }
@@ -578,6 +561,15 @@ public class MainActivity extends Activity {
         }
         return grantResults[0] == PackageManager.PERMISSION_GRANTED
                 && grantResults[1] == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void checkAndRequestStoragePermissionOnStartup() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return;
+        }
+        if (!checkStoragePermission()) {
+            showStoragePermissionRequestDialog();
+        }
     }
 
     private void showLoadingDialog(String message) {
