@@ -3,6 +3,8 @@ package com.coara.proc;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
@@ -16,26 +18,36 @@ import android.os.Environment;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.provider.MediaStore;
+import android.graphics.Typeface;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.ListView;
+import android.widget.TextView;
 import android.widget.LinearLayout;
 import android.widget.Toast;
 
 import com.coara.proc.databinding.ActivityMainBinding;
 import com.coara.proc.databinding.DialogLoadingBinding;
 import com.coara.proc.databinding.DialogProcInfoBinding;
+import com.coara.proc.databinding.DialogProcInfoSmapBinding;
 
 import java.io.BufferedInputStream;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -49,6 +61,7 @@ public class MainActivity extends Activity {
     private static final String PATH_PROC_SELF_AUXV = "/proc/self/auxv";
     private static final int REQUEST_STORAGE_PERMISSION = 1001;
     private static final int BUFFER_SIZE = 16 * 1024;
+    private static final int SMAP_CHUNK_CHARS = 4096;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private IProcInfoService procInfoService;
@@ -110,6 +123,8 @@ public class MainActivity extends Activity {
         allExportButton.setText("All Export");
         allExportButton.setOnClickListener(v -> exportAllProcInfo());
         linearLayoutMain.addView(allExportButton);
+
+        checkAndRequestStoragePermissionOnStartup();
     }
 
     private enum ProcInfoMethod {
@@ -139,7 +154,12 @@ public class MainActivity extends Activity {
     }
 
     private void showProcInfo(ProcInfoMethod method) {
-        if (method != ProcInfoMethod.PROC_SELF_SMAP && procInfoService == null) {
+        if (method == ProcInfoMethod.PROC_SELF_SMAP) {
+            showSmapDialog();
+            return;
+        }
+
+        if (procInfoService == null) {
             Log.e(TAG, "Service not bound");
             Toast.makeText(MainActivity.this, "サービスが接続されていません", Toast.LENGTH_SHORT).show();
             return;
@@ -173,17 +193,94 @@ public class MainActivity extends Activity {
         });
     }
 
-    private String readTextFileDirect(String path) throws IOException {
-        StringBuilder builder = new StringBuilder(1024 * 16);
+    private void showSmapDialog() {
+        showLoadingDialog("しばらくお待ちください");
+
+        executor.execute(() -> {
+            try {
+                List<String> chunks = loadTextChunksDirect(PATH_PROC_SELF_SMAP);
+                runOnUiThread(() -> {
+                    dismissLoadingDialog();
+                    showSmapChunkDialog(chunks);
+                });
+            } catch (IOException e) {
+                Log.e(TAG, "Error loading smaps", e);
+                runOnUiThread(() -> {
+                    dismissLoadingDialog();
+                    Toast.makeText(MainActivity.this, "表示に失敗しました", Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+    }
+
+    private List<String> loadTextChunksDirect(String path) throws IOException {
+        ArrayList<String> chunks = new ArrayList<>();
         try (InputStream in = new BufferedInputStream(new FileInputStream(path), BUFFER_SIZE);
-             java.io.InputStreamReader reader = new java.io.InputStreamReader(in, StandardCharsets.UTF_8)) {
+             BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8), BUFFER_SIZE)) {
             char[] buffer = new char[BUFFER_SIZE];
-            int len;
-            while ((len = reader.read(buffer)) != -1) {
-                builder.append(buffer, 0, len);
+            StringBuilder pending = new StringBuilder(BUFFER_SIZE * 2);
+            int read;
+            while ((read = reader.read(buffer)) != -1) {
+                pending.append(buffer, 0, read);
+                int fullChunkEnd = (pending.length() / SMAP_CHUNK_CHARS) * SMAP_CHUNK_CHARS;
+                int offset = 0;
+                while (offset < fullChunkEnd) {
+                    chunks.add(pending.substring(offset, offset + SMAP_CHUNK_CHARS));
+                    offset += SMAP_CHUNK_CHARS;
+                }
+                if (offset > 0) {
+                    pending.delete(0, offset);
+                }
+            }
+            if (pending.length() > 0) {
+                chunks.add(pending.toString());
             }
         }
-        return builder.toString();
+        if (chunks.isEmpty()) {
+            chunks.add("");
+        }
+        return chunks;
+    }
+
+    private void showSmapChunkDialog(List<String> chunks) {
+        DialogProcInfoSmapBinding dialogBinding = DialogProcInfoSmapBinding.inflate(LayoutInflater.from(this));
+        dialogBinding.txtProcInfoTitle.setText("PROC_SELF_SMAP");
+        dialogBinding.txtProcInfoMeta.setText("約 " + chunks.size() + " chunks / 長押しでコピー");
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, chunks) {
+            @Override
+            public android.view.View getView(int position, android.view.View convertView, android.view.ViewGroup parent) {
+                TextView view = (TextView) super.getView(position, convertView, parent);
+                view.setTypeface(Typeface.MONOSPACE);
+                view.setTextSize(12f);
+                view.setTextIsSelectable(true);
+                view.setPadding(24, 16, 24, 16);
+                view.setText(getItem(position));
+                return view;
+            }
+        };
+        dialogBinding.listProcInfoChunks.setAdapter(adapter);
+        dialogBinding.listProcInfoChunks.setOnItemLongClickListener((AdapterView<?> parent, android.view.View view, int position, long id) -> {
+            String item = adapter.getItem(position);
+            if (item != null) {
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                if (clipboard != null) {
+                    clipboard.setPrimaryClip(ClipData.newPlainText("PROC_SELF_SMAP", item));
+                    Toast.makeText(MainActivity.this, "コピーしました", Toast.LENGTH_SHORT).show();
+                }
+            }
+            return true;
+        });
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(dialogBinding.getRoot())
+                .create();
+        dialogBinding.btnCloseDialog.setOnClickListener(v -> dialog.dismiss());
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(android.view.WindowManager.LayoutParams.MATCH_PARENT,
+                    android.view.WindowManager.LayoutParams.MATCH_PARENT);
+        }
     }
 
     private String readProcInfo(ProcInfoMethod method) throws RemoteException, IOException {
@@ -229,7 +326,7 @@ public class MainActivity extends Activity {
             case PROC_SELF_SCHEDSTAT:
                 return procInfoService.getProcSelfSchedstat();
             case PROC_SELF_SMAP:
-                return readTextFileDirect(PATH_PROC_SELF_SMAP);
+                return procInfoService.getProcSelfSmap();
             case PROC_SELF_WCHAN:
                 return procInfoService.readProcFile(PATH_PROC_SELF_WCHAN);
             case PROC_SELF_AUXV:
@@ -437,6 +534,12 @@ public class MainActivity extends Activity {
             } else {
                 Toast.makeText(this, "ストレージ権限が必要です", Toast.LENGTH_SHORT).show();
             }
+        }
+    }
+
+    private void checkAndRequestStoragePermissionOnStartup() {
+        if (!checkStoragePermission()) {
+            requestStoragePermission();
         }
     }
 
