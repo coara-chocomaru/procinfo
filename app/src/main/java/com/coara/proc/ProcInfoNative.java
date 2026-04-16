@@ -1,9 +1,13 @@
 package com.coara.proc;
 
-public class ProcInfoNative {
+public final class ProcInfoNative {
     static {
         System.loadLibrary("proc");
     }
+
+    private ProcInfoNative() {
+    }
+
     public static native String getProcVersion();
     public static native String getProcCPUInfo();
     public static native String getProcMemInfo();
