@@ -4,15 +4,15 @@ plugins {
 
 android {
     namespace 'com.coara.proc'
-    compileSdk 35
-    ndkVersion '25.0.8775105'
+    compileSdk 36
+    ndkVersion '29.0.14206865'
 
     defaultConfig {
         applicationId 'com.coara.proc'
         minSdk 24
-        targetSdk 35
+        targetSdk 36
         versionCode 6
-        versionName '1.1'
+        versionName '1.2'
         multiDexEnabled true
 
         externalNativeBuild {
